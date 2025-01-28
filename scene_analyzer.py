@@ -227,73 +227,71 @@ class JanusAnalyzer(SceneAnalyzer):
 
     def analyze_frames_batch(self, frames: List[numpy.ndarray]) -> List[str]:
         """Analyze multiple frames in a single batch using Janus-Pro model"""
-        # Save frames as temporary images
-        frame_paths = []
+        descriptions = []
+        total_frames = len(frames)
+        
+        print(f"\nProcessing {total_frames} frames...")
+        
         for i, frame in enumerate(frames):
+            # Save frame as temporary image
             frame_path = self.temp_dir / f"frame_{i:03d}.png"
             cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            frame_paths.append(frame_path)
-
-        # Create request for server
-        request = {
-            'images': [str(p) for p in frame_paths],
-            'output_dir': str(self.temp_dir)
-        }
-        
-        print("\nRunning Janus-Pro batch analysis...")
-        
-        # Connect to server and send request
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.connect(('localhost', 65432))
             
-            # Send message length first, then the message
-            message = json.dumps(request).encode('utf-8')
-            message_len = len(message)
-            sock.sendall(message_len.to_bytes(8, byteorder='big'))
-            sock.sendall(message)
+            # Create request for server
+            request = {
+                'images': [str(frame_path)],
+                'output_dir': str(self.temp_dir)
+            }
             
-            # First receive the response length
-            response_len_bytes = sock.recv(8)
-            if not response_len_bytes:
-                raise Exception("Connection closed by server")
-            response_len = int.from_bytes(response_len_bytes, byteorder='big')
-            
-            # Then receive the full response
-            chunks = []
-            bytes_received = 0
-            while bytes_received < response_len:
-                chunk = sock.recv(min(8192, response_len - bytes_received))
-                if not chunk:
-                    raise Exception("Connection closed by server")
-                chunks.append(chunk)
-                bytes_received += len(chunk)
-            
-            response = b''.join(chunks).decode('utf-8')
-            
+            # Connect to server and send request
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                results = json.loads(response)
-                descriptions = []
-                for result in results:
-                    if isinstance(result, dict) and result.get('success'):
-                        descriptions.append(result['result'])
-                    else:
-                        print(f"Error processing frame: {result.get('error') if isinstance(result, dict) else 'Invalid response'}")
-                        descriptions.append("")
-            except json.JSONDecodeError as e:
-                print(f"Error decoding server response: {e}")
-                print(f"Raw response: {response}")
-                descriptions = [""] * len(frame_paths)
+                sock.connect(('localhost', 65432))
                 
-        except Exception as e:
-            print(f"Error communicating with Janus server: {e}")
-            descriptions = [""] * len(frame_paths)
-        finally:
-            sock.close()
-            # Clean up temporary files
-            for path in frame_paths:
+                # Send message length first, then the message
+                message = json.dumps(request).encode('utf-8')
+                message_len = len(message)
+                sock.sendall(message_len.to_bytes(8, byteorder='big'))
+                sock.sendall(message)
+                
+                # First receive the response length
+                response_len_bytes = sock.recv(8)
+                if not response_len_bytes:
+                    raise Exception("Connection closed by server")
+                response_len = int.from_bytes(response_len_bytes, byteorder='big')
+                
+                # Then receive the full response
+                chunks = []
+                bytes_received = 0
+                while bytes_received < response_len:
+                    chunk = sock.recv(min(8192, response_len - bytes_received))
+                    if not chunk:
+                        raise Exception("Connection closed by server")
+                    chunks.append(chunk)
+                    bytes_received += len(chunk)
+                
+                response = b''.join(chunks).decode('utf-8')
+                
                 try:
-                    path.unlink()
+                    results = json.loads(response)
+                    if results and isinstance(results[0], dict) and results[0].get('success'):
+                        descriptions.append(results[0]['result'])
+                        print(f"\nFrame {i+1}/{total_frames}: {results[0]['result']}")
+                    else:
+                        error = results[0].get('error') if results and isinstance(results[0], dict) else 'Invalid response'
+                        print(f"\nError processing frame {i+1}/{total_frames}: {error}")
+                        descriptions.append("")
+                except json.JSONDecodeError as e:
+                    print(f"\nError decoding server response for frame {i+1}/{total_frames}: {e}")
+                    descriptions.append("")
+                    
+            except Exception as e:
+                print(f"\nError communicating with Janus server for frame {i+1}/{total_frames}: {e}")
+                descriptions.append("")
+            finally:
+                sock.close()
+                try:
+                    frame_path.unlink()
                 except FileNotFoundError:
                     pass
 
