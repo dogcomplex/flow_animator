@@ -16,6 +16,7 @@ import threading
 import queue
 import signal
 from dotenv import load_dotenv
+import argparse
 
 class JanusServer:
     def __init__(self):
@@ -42,13 +43,14 @@ class JanusServer:
         self.vl_gpt = self.vl_gpt.to(torch.bfloat16).cuda().eval()
         print("Model loaded and ready")
 
-    def process_image(self, image_path, output_dir="responses"):
+    def process_image(self, image_path, prompt=None, output_dir="responses"):
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"The image file '{image_path}' does not exist.")
 
         os.makedirs(output_dir, exist_ok=True)
 
-        question = "Please describe this image"
+        # Use provided prompt or default
+        question = prompt if prompt else "Please describe this image"
         conversation = [
             {
                 "role": "<|User|>",
@@ -80,54 +82,70 @@ class JanusServer:
         
         output_filename = os.path.join(output_dir, os.path.basename(image_path).rsplit('.', 1)[0] + '.txt')
         with open(output_filename, 'w', encoding='utf-8') as f:
-            f.write(answer)
+            f.write(f"Prompt: {question}\nResponse: {answer}")
         
-        print(f"Processed {image_path} -> {output_filename}")
-        print(f"{prepare_inputs['sft_format'][0]}", answer)
         return answer
 
     def handle_client(self, client_socket):
         try:
-            # First receive message length
+            # Receive message length
             message_len_bytes = client_socket.recv(8)
             if not message_len_bytes:
-                return
+                raise Exception("No data received")
             message_len = int.from_bytes(message_len_bytes, byteorder='big')
             
-            # Then receive the full message
-            chunks = []
-            bytes_received = 0
-            while bytes_received < message_len:
-                chunk = client_socket.recv(min(8192, message_len - bytes_received))
+            # Receive full message
+            data = b''
+            while len(data) < message_len:
+                chunk = client_socket.recv(min(8192, message_len - len(data)))
                 if not chunk:
-                    return
-                chunks.append(chunk)
-                bytes_received += len(chunk)
+                    raise Exception("Connection closed while receiving request")
+                data += chunk
             
-            data = b''.join(chunks).decode('utf-8')
-            request = json.loads(data)
+            request = json.loads(data.decode('utf-8'))
             
+            # Handle both single image and image list formats
             image_paths = request.get('images', [])
+            if not image_paths and request.get('image'):
+                image_paths = [request.get('image')]
+            
             output_dir = request.get('output_dir', 'responses')
+            prompt = request.get('prompt', "Describe the scene content and any motion or action occurring in this frame.")
             
             results = []
             for image_path in image_paths:
                 try:
-                    result = self.process_image(image_path, output_dir)
-                    results.append({"path": image_path, "success": True, "result": result})
+                    result = self.process_image(image_path, prompt, output_dir)
+                    results.append({
+                        "path": image_path,
+                        "success": True,
+                        "result": result
+                    })
                 except Exception as e:
-                    results.append({"path": image_path, "success": False, "error": str(e)})
+                    print(f"Error processing {image_path}: {str(e)}")
+                    results.append({
+                        "path": image_path,
+                        "success": False,
+                        "error": str(e)
+                    })
             
-            # Send response length first, then the response
-            response = json.dumps(results).encode('utf-8')
-            response_len = len(response)
+            # Send response
+            response_data = json.dumps(results).encode('utf-8')
+            response_len = len(response_data)
             client_socket.sendall(response_len.to_bytes(8, byteorder='big'))
-            client_socket.sendall(response)
+            client_socket.sendall(response_data)
+            
         except Exception as e:
-            error_response = json.dumps({"error": str(e)}).encode('utf-8')
-            error_len = len(error_response)
-            client_socket.sendall(error_len.to_bytes(8, byteorder='big'))
-            client_socket.sendall(error_response)
+            print(f"Server error: {str(e)}")
+            error_response = json.dumps([{
+                "success": False,
+                "error": str(e)
+            }]).encode('utf-8')
+            try:
+                client_socket.sendall(len(error_response).to_bytes(8, byteorder='big'))
+                client_socket.sendall(error_response)
+            except:
+                pass
         finally:
             client_socket.close()
 
@@ -157,62 +175,152 @@ class JanusServer:
                 if self.running:
                     print(f"Error accepting connection: {e}")
 
+    def process_images(self, image_paths, prompts=None, output_dir="responses"):
+        """
+        Process multiple images with optional prompts
+        Args:
+            image_paths: List of image paths
+            prompts: Optional list of prompts (must match length of image_paths if provided)
+            output_dir: Directory to save responses
+        """
+        if not image_paths:
+            return []
+        
+        if prompts and len(prompts) != len(image_paths):
+            raise ValueError("Number of prompts must match number of images")
+        
+        results = []
+        for idx, image_path in enumerate(image_paths):
+            try:
+                prompt = prompts[idx] if prompts else None
+                result = self.process_image(image_path, prompt, output_dir)
+                results.append({
+                    "path": image_path,
+                    "prompt": prompt,
+                    "success": True,
+                    "result": result
+                })
+            except Exception as e:
+                results.append({
+                    "path": image_path,
+                    "prompt": prompt if prompts else None,
+                    "success": False,
+                    "error": str(e)
+                })
+        return results
+
 class JanusClient:
     def __init__(self, port=65432):
         self.port = port
 
-    def process_images(self, image_paths, output_dir="responses"):
+    def process_image(self, image_path, prompt=None, output_dir="responses"):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.connect(('localhost', self.port))
             request = {
-                'images': image_paths,
+                'image': image_path,
+                'prompt': prompt,
                 'output_dir': output_dir
             }
-            sock.sendall(json.dumps(request).encode('utf-8'))
+            request_data = json.dumps(request).encode('utf-8')
+            sock.sendall(len(request_data).to_bytes(8, byteorder='big'))
+            sock.sendall(request_data)
             
-            response = sock.recv(1024*1024).decode('utf-8')  # Increased buffer size
-            return json.loads(response)
+            response_len = int.from_bytes(sock.recv(8), byteorder='big')
+            response = b''
+            while len(response) < response_len:
+                chunk = sock.recv(min(8192, response_len - len(response)))
+                if not chunk:
+                    break
+                response += chunk
+            
+            return json.loads(response.decode('utf-8'))
         finally:
             sock.close()
 
+    def process_images(self, image_paths, prompts=None, output_dir="responses"):
+        """
+        Process multiple images with optional prompts
+        Args:
+            image_paths: List of image paths
+            prompts: Optional list of prompts (must match length of image_paths if provided)
+            output_dir: Directory to save responses
+        """
+        if not image_paths:
+            return []
+        
+        if prompts and len(prompts) != len(image_paths):
+            raise ValueError("Number of prompts must match number of images")
+        
+        results = []
+        for idx, image_path in enumerate(image_paths):
+            try:
+                prompt = prompts[idx] if prompts else None
+                result = self.process_image(image_path, prompt, output_dir)
+                results.append({
+                    "path": image_path,
+                    "prompt": prompt,
+                    "success": True,
+                    "result": result
+                })
+            except Exception as e:
+                results.append({
+                    "path": image_path,
+                    "prompt": prompt if prompts else None,
+                    "success": False,
+                    "error": str(e)
+                })
+        return results
+
 def main():
-    import argparse
     parser = argparse.ArgumentParser(description='Process images with Janus-Pro model')
     parser.add_argument('--images', help='Comma-separated list of image paths')
-    parser.add_argument('image_path', nargs='?', help='Path to single image file')
+    parser.add_argument('--prompts', help='Comma-separated list of prompts (must match number of images)')
     parser.add_argument('--persist', action='store_true', help='Run as persistent server')
     parser.add_argument('--output-dir', default='responses', help='Directory to save responses')
     parser.add_argument('--port', type=int, default=65432, help='Port for server mode')
+    
+    # Support for positional arguments
+    parser.add_argument('args', nargs='*', help='Positional args: [image_paths] [prompts]')
+    
     args = parser.parse_args()
 
     if args.persist:
-        # Run as server
         server = JanusServer()
         server.run_server(port=args.port)
-    else:
-        # Run as client
-        client = JanusClient(port=args.port)
-        image_paths = []
-        
-        if args.images:
-            image_paths.extend([path.strip() for path in args.images.split(',')])
-        if args.image_path:
-            image_paths.append(args.image_path)
-            
-        if not image_paths:
-            parser.print_help()
-            return
+        return
 
-        try:
-            results = client.process_images(image_paths, args.output_dir)
-            for result in results:
-                if result.get('success'):
-                    print(f"Successfully processed {result['path']}")
-                else:
-                    print(f"Error processing {result['path']}: {result.get('error')}")
-        except ConnectionRefusedError:
-            print("Error: Could not connect to Janus server. Please start it with --persist flag first.")
+    # Handle image paths
+    image_paths = []
+    if args.images:
+        image_paths.extend([path.strip() for path in args.images.split(',')])
+    elif len(args.args) >= 1:
+        image_paths.extend([path.strip() for path in args.args[0].split(',')])
+
+    # Handle prompts
+    prompts = None
+    if args.prompts:
+        prompts = [prompt.strip() for prompt in args.prompts.split(',')]
+    elif len(args.args) >= 2:
+        prompts = [prompt.strip() for prompt in args.args[1].split(',')]
+
+    if not image_paths:
+        parser.print_help()
+        return
+
+    try:
+        client = JanusClient(port=args.port)
+        results = client.process_images(image_paths, prompts, args.output_dir)
+        
+        for result in results:
+            if result['success']:
+                print(f"Successfully processed {result['path']}")
+                print(f"Prompt: {result['prompt']}")
+                print(f"Response: {result['result']}\n")
+            else:
+                print(f"Error processing {result['path']}: {result['error']}\n")
+    except ConnectionRefusedError:
+        print("Error: Could not connect to Janus server. Please start it with --persist flag first.")
 
 if __name__ == "__main__":
     main()

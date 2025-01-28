@@ -242,74 +242,68 @@ class JanusAnalyzer(SceneAnalyzer):
             # Check if we already have a cached prompt
             if prompt_path.exists():
                 with open(prompt_path, 'r') as f:
-                    descriptions.append(f.read().strip())
+                    description = f.read().strip()
+                    if description:  # Only append non-empty descriptions
+                        descriptions.append(description)
                 print(f"\nFrame {i+1}/{total_frames}: Using cached description")
                 continue
             
-            # Save frame as image if it doesn't exist
-            if not frame_path.exists():
-                cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            # Save frame as image
+            cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             
-            # Create request for server
-            request = {
-                'images': [str(frame_path)],
-                'output_dir': str(Path(self.frame_prompts_dir))
-            }
-            
-            # Connect to server and send request
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.connect(('localhost', 65432))
-                
-                message = json.dumps(request).encode('utf-8')
-                message_len = len(message)
-                sock.sendall(message_len.to_bytes(8, byteorder='big'))
-                sock.sendall(message)
-                
-                response_len_bytes = sock.recv(8)
-                if not response_len_bytes:
-                    raise Exception("Connection closed by server")
-                response_len = int.from_bytes(response_len_bytes, byteorder='big')
-                
-                chunks = []
-                bytes_received = 0
-                while bytes_received < response_len:
-                    chunk = sock.recv(min(8192, response_len - bytes_received))
-                    if not chunk:
-                        raise Exception("Connection closed by server")
-                    chunks.append(chunk)
-                    bytes_received += len(chunk)
-                
-                response = b''.join(chunks).decode('utf-8')
-                
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
                 try:
-                    results = json.loads(response)
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(30)  # Add timeout
+                    sock.connect(('localhost', 65432))
+                    
+                    request = {
+                        'images': [str(frame_path)],
+                        'output_dir': str(Path(self.frame_prompts_dir))
+                    }
+                    
+                    message = json.dumps(request).encode('utf-8')
+                    message_len = len(message)
+                    sock.sendall(message_len.to_bytes(8, byteorder='big'))
+                    sock.sendall(message)
+                    
+                    response_len_bytes = sock.recv(8)
+                    if not response_len_bytes:
+                        raise Exception("Connection closed by server")
+                        
+                    response_len = int.from_bytes(response_len_bytes, byteorder='big')
+                    response = b''
+                    while len(response) < response_len:
+                        chunk = sock.recv(min(8192, response_len - len(response)))
+                        if not chunk:
+                            raise Exception("Connection closed while receiving data")
+                        response += chunk
+                    
+                    results = json.loads(response.decode('utf-8'))
                     if results and isinstance(results[0], dict) and results[0].get('success'):
                         description = results[0]['result']
-                        descriptions.append(description)
-                        # Save the description to cache
+                        if description.strip():  # Only append non-empty descriptions
+                            descriptions.append(description)
                         prompt_path.write_text(description)
                         print(f"\nFrame {i+1}/{total_frames}: {description}")
+                        break  # Success - exit retry loop
                     else:
-                        error = results[0].get('error') if results and isinstance(results[0], dict) else 'Invalid response'
-                        print(f"\nError processing frame {i+1}/{total_frames}: {error}")
-                        descriptions.append("")
-                except json.JSONDecodeError as e:
-                    print(f"\nError decoding server response for frame {i+1}/{total_frames}: {e}")
-                    descriptions.append("")
-                    
-            except Exception as e:
-                print(f"\nError communicating with Janus server for frame {i+1}/{total_frames}: {e}")
-                descriptions.append("")
-            finally:
-                sock.close()
-
-        if not any(descriptions):
+                        error = results[0].get('error') if results else "Unknown error"
+                        raise Exception(error)
+                        
+                except Exception as e:
+                    retry_count += 1
+                    print(f"\nError processing frame {i+1}/{total_frames} (attempt {retry_count}/{max_retries}): {e}")
+                    if retry_count == max_retries:
+                        print(f"Failed to process frame after {max_retries} attempts")
+                finally:
+                    sock.close()
+                
+        # Only raise exception if we got no descriptions at all
+        if not descriptions:
             raise Exception("Janus-Pro analysis failed to produce any output")
         
         # Return the first good description
-        for desc in descriptions:
-            if desc.strip():
-                return desc
-        
-        return "No description available" 
+        return descriptions[0] 
