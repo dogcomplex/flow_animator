@@ -8,10 +8,9 @@ from tqdm import tqdm
 OUTPUT_DIR = "output"
 PROMPTS_DIR = "scene_prompts"
 API_ENDPOINT = "http://192.168.56.1:12345"
-FRAME_SKIP = 5  # Analyze every 5th frame
+FRAME_SKIP = 24  # Analyze every 24th frame
 JANUS_PATH = "./Janus/janus_pro.py"
 JANUS_MODE = True
-BATCH_SIZE = 1000  # Max number of files to pass to Janus at a time
 
 def save_prompt_for_file(prompt: str, filename: str):
     """Save the same prompt for both main clips and their segments"""
@@ -64,7 +63,7 @@ def main():
             video_path = scene_groups[scene_num][0]
             frames = analyzer.get_frames(str(video_path))
             if frames:
-                description = analyzer.analyze_frames(frames)
+                description = analyzer.analyze_frames(frames, str(video_path))
                 scene_descriptions[scene_num] = description
                 analyzer.save_prompt_cache(scene_num, description)
                 for video_path in scene_groups[scene_num]:

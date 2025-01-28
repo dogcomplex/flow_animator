@@ -18,20 +18,29 @@ class SceneAnalyzer:
         self.frame_skip = frame_skip
         self.prompts_dir = prompts_dir
         Path(prompts_dir).mkdir(exist_ok=True)
-        self.cache: Dict[str, str] = {}
 
-    def get_cache_path(self, scene_num: int) -> Path:
-        return Path(self.prompts_dir) / f"scene_{scene_num:03d}.txt"
+    def get_prompt_path(self, video_path: str) -> Path:
+        """Get path for prompt cache based on video filename"""
+        return Path(self.prompts_dir) / f"{Path(video_path).stem}.txt"
 
     def load_cached_prompt(self, scene_num: int) -> Optional[str]:
-        cache_path = self.get_cache_path(scene_num)
-        if cache_path.exists():
-            return cache_path.read_text()
+        """Load cached prompt using scene number"""
+        # Convert scene number to expected video filename
+        video_name = f"input-Scene-{scene_num:03d}"
+        prompt_path = Path(self.prompts_dir) / f"{video_name}.txt"
+        if prompt_path.exists():
+            return prompt_path.read_text()
         return None
 
     def save_prompt_cache(self, scene_num: int, prompt: str):
-        cache_path = self.get_cache_path(scene_num)
-        cache_path.write_text(prompt)
+        """Save prompt using scene number - now just an alias for save_prompt_for_file"""
+        video_name = f"input-Scene-{scene_num:03d}"
+        self.save_prompt_for_file(prompt, video_name)
+
+    def save_prompt_for_file(self, prompt: str, filename: str):
+        """Save prompt using video filename"""
+        prompt_path = Path(self.prompts_dir) / f"{filename}.txt"
+        prompt_path.write_text(prompt)
 
     def extract_scene_info(self, filename: str) -> Optional[tuple[int, Optional[int]]]:
         """Extract scene and segment numbers from filename"""
@@ -50,26 +59,72 @@ class SceneAnalyzer:
         except (ValueError, IndexError):
             return None
 
+    def get_cache_paths(self, video_path: str) -> tuple[Path, Path]:
+        """Get paths for frame cache and prompt cache"""
+        base_name = Path(video_path).stem + "_f24"
+        frame_path = Path("frames") / f"{base_name}.npy"
+        prompt_path = Path("frame_prompts") / f"{base_name}.txt"
+        return frame_path, prompt_path
+
     def get_frames(self, video_path: str) -> List[numpy.ndarray]:
-        """Extract frames from video with frame skipping"""
+        """Extract frames from video with adaptive frame skipping and caching"""
+        base_name = Path(video_path).stem
         frames = []
-        cap = cv2.VideoCapture(video_path)
-        frame_count = 0
         
+        # Create frames directory if it doesn't exist
+        Path("frames").mkdir(exist_ok=True)
+        
+        # Check if we have all cached frame images
+        frame_count = 0
+        while True:
+            frame_path = Path("frames") / f"{base_name}_f{frame_count:03d}.png"
+            if not frame_path.exists():
+                break
+            frame = cv2.imread(str(frame_path))
+            if frame is None:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            frame_count += 1
+        
+        if frames:  # If we found cached frames, return them
+            return frames
+        
+        # No cached frames found, process video
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        effective_skip = min(self.frame_skip, total_frames)
+        
+        frame_count = 0
+        frame_index = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            if frame_count % self.frame_skip == 0:
+            if frame_count % effective_skip == 0 or frame_count == total_frames - 1:
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                # Save frame as PNG
+                frame_path = Path("frames") / f"{base_name}_f{frame_index:03d}.png"
+                cv2.imwrite(str(frame_path), frame)
+                frame_index += 1
             frame_count += 1
-            
+        
         cap.release()
         return frames
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def analyze_frames(self, frames: List[numpy.ndarray]) -> str:
+    def analyze_frames(self, frames: List[numpy.ndarray], video_path: str) -> str:
+        """Analyze frames with caching"""
+        _, prompt_cache_path = self.get_cache_paths(video_path)
+        
+        # Create frame_prompts directory if it doesn't exist
+        prompt_cache_path.parent.mkdir(exist_ok=True)
+        
+        # Check for cached prompt
+        if prompt_cache_path.exists():
+            return prompt_cache_path.read_text()
+        
+        # Original analysis code
         encoded_frames = [self._encode_frame(frame) for frame in frames]
         
         payload = {
@@ -93,7 +148,10 @@ class SceneAnalyzer:
             raise Exception(f"API request failed with status {response.status_code}")
         
         try:
-            return response.json()["choices"][0]["message"]["content"]
+            description = response.json()["choices"][0]["message"]["content"]
+            # Cache the prompt
+            prompt_cache_path.write_text(description)
+            return description
         except (KeyError, IndexError) as e:
             raise Exception(f"Unexpected API response format: {str(e)}")
 
@@ -106,8 +164,8 @@ class JanusAnalyzer(SceneAnalyzer):
     def __init__(self, janus_path: str, frame_skip: int = 5, prompts_dir: str = "scene_prompts"):
         super().__init__("", frame_skip, prompts_dir)
         self.janus_path = janus_path
-        self.temp_dir = Path("temp_frames")
-        self.temp_dir.mkdir(exist_ok=True)
+        Path("frames").mkdir(exist_ok=True)
+        Path("frame_prompts").mkdir(exist_ok=True)
         self.server_process = None
         self.start_server()
         import atexit
@@ -161,7 +219,7 @@ class JanusAnalyzer(SceneAnalyzer):
                     raise Exception("Failed to start Janus server")
 
     def cleanup(self):
-        """Cleanup resources including shutting down the server"""
+        """Cleanup only server resources, keeping frame caches"""
         if self.server_process:
             print("\nShutting down Janus server...")
             self.server_process.terminate()
@@ -170,77 +228,34 @@ class JanusAnalyzer(SceneAnalyzer):
             except subprocess.TimeoutExpired:
                 self.server_process.kill()
             self.server_process = None
-        
-        # Cleanup temp directory
-        if self.temp_dir.exists():
-            for file in self.temp_dir.glob("*"):
-                try:
-                    file.unlink()
-                except:
-                    pass
-            try:
-                self.temp_dir.rmdir()
-            except:
-                pass
 
-    def analyze_frames(self, frames: List[numpy.ndarray]) -> str:
-        """Analyze frames using Janus-Pro model"""
-        # Save frames as temporary images
-        frame_paths = []
-        for i, frame in enumerate(frames):
-            frame_path = self.temp_dir / f"frame_{i:03d}.png"
-            cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            frame_paths.append(frame_path)
-
-        # Create comma-separated list of image paths
-        images_arg = ",".join(str(p) for p in frame_paths)
-        
-        print("\nRunning Janus-Pro analysis...")
-        # Run Janus-Pro and capture all output
-        result = subprocess.run([
-            "python", self.janus_path,
-            frame_paths[0],  # First image as main argument
-            "--images", images_arg,
-            "--output-dir", self.temp_dir
-        ], capture_output=True, text=True)
-
-        # Print all stdout and stderr
-        if result.stdout:
-            print("\nJanus Output:")
-            print(result.stdout)
-        if result.stderr:
-            print("\nJanus Errors/Warnings:")
-            print(result.stderr)
-
-        # Clean up temporary images
-        for path in frame_paths:
-            path.unlink()
-
-        # Read the output file (matches first image name)
-        output_file = self.temp_dir / f"{frame_paths[0].stem}.txt"
-        if output_file.exists():
-            description = output_file.read_text().strip()
-            output_file.unlink()
-            return description
-        
-        raise Exception("Janus-Pro analysis failed to produce output")
-
-    def analyze_frames_batch(self, frames: List[numpy.ndarray]) -> List[str]:
-        """Analyze multiple frames in a single batch using Janus-Pro model"""
+    def analyze_frames(self, frames: List[numpy.ndarray], video_path: str) -> str:
+        """Analyze frames using Janus-Pro model with persistent caching"""
+        base_name = Path(video_path).stem
         descriptions = []
         total_frames = len(frames)
         
         print(f"\nProcessing {total_frames} frames...")
         
         for i, frame in enumerate(frames):
-            # Save frame as temporary image
-            frame_path = self.temp_dir / f"frame_{i:03d}.png"
-            cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            frame_path = Path("frames") / f"{base_name}_f{i:03d}.png"
+            prompt_path = Path("frame_prompts") / f"{base_name}_f{i:03d}.txt"
+            
+            # Check if we already have a cached prompt
+            if prompt_path.exists():
+                with open(prompt_path, 'r') as f:
+                    descriptions.append(f.read().strip())
+                print(f"\nFrame {i+1}/{total_frames}: Using cached description")
+                continue
+            
+            # Save frame as image if it doesn't exist
+            if not frame_path.exists():
+                cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             
             # Create request for server
             request = {
                 'images': [str(frame_path)],
-                'output_dir': str(self.temp_dir)
+                'output_dir': str(Path("frame_prompts"))
             }
             
             # Connect to server and send request
@@ -248,19 +263,16 @@ class JanusAnalyzer(SceneAnalyzer):
             try:
                 sock.connect(('localhost', 65432))
                 
-                # Send message length first, then the message
                 message = json.dumps(request).encode('utf-8')
                 message_len = len(message)
                 sock.sendall(message_len.to_bytes(8, byteorder='big'))
                 sock.sendall(message)
                 
-                # First receive the response length
                 response_len_bytes = sock.recv(8)
                 if not response_len_bytes:
                     raise Exception("Connection closed by server")
                 response_len = int.from_bytes(response_len_bytes, byteorder='big')
                 
-                # Then receive the full response
                 chunks = []
                 bytes_received = 0
                 while bytes_received < response_len:
@@ -275,8 +287,11 @@ class JanusAnalyzer(SceneAnalyzer):
                 try:
                     results = json.loads(response)
                     if results and isinstance(results[0], dict) and results[0].get('success'):
-                        descriptions.append(results[0]['result'])
-                        print(f"\nFrame {i+1}/{total_frames}: {results[0]['result']}")
+                        description = results[0]['result']
+                        descriptions.append(description)
+                        # Save the description to cache
+                        prompt_path.write_text(description)
+                        print(f"\nFrame {i+1}/{total_frames}: {description}")
                     else:
                         error = results[0].get('error') if results and isinstance(results[0], dict) else 'Invalid response'
                         print(f"\nError processing frame {i+1}/{total_frames}: {error}")
@@ -290,21 +305,13 @@ class JanusAnalyzer(SceneAnalyzer):
                 descriptions.append("")
             finally:
                 sock.close()
-                try:
-                    frame_path.unlink()
-                except FileNotFoundError:
-                    pass
 
         if not any(descriptions):
             raise Exception("Janus-Pro analysis failed to produce any output")
         
-        return descriptions
-
-    def aggregate_descriptions(self, descriptions: List[str]) -> str:
-        """Combine multiple frame descriptions into a single scene description"""
-        # For now, just use the first non-empty description
-        # This could be enhanced with more sophisticated aggregation
+        # Return the first good description
         for desc in descriptions:
             if desc.strip():
                 return desc
+        
         return "No description available" 
