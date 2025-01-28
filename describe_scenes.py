@@ -1,16 +1,33 @@
 import os
+import shutil
+import argparse
 from pathlib import Path
 from scene_analyzer import SceneAnalyzer, JanusAnalyzer
 from typing import Dict, List
 from tqdm import tqdm
 
 # Configuration
-OUTPUT_DIR = "output"
-PROMPTS_DIR = "scene_prompts"
+OUTPUT_BASE = "outputs"
+OUTPUT_DIR = f"{OUTPUT_BASE}/scenes"
+PROMPTS_DIR = f"{OUTPUT_BASE}/scene_prompts"
 API_ENDPOINT = "http://192.168.56.1:12345"
 FRAME_SKIP = 24  # Analyze every 24th frame
 JANUS_PATH = "./Janus/janus_pro.py"
 JANUS_MODE = True
+
+def reset_cache():
+    """Clear all cache directories"""
+    Path(OUTPUT_BASE).mkdir(exist_ok=True)
+    dirs_to_clear = [
+        f'{OUTPUT_BASE}/frames', 
+        f'{OUTPUT_BASE}/scene_prompts', 
+        f'{OUTPUT_BASE}/frame_prompts'
+    ]
+    for dir_name in dirs_to_clear:
+        if Path(dir_name).exists():
+            shutil.rmtree(dir_name)
+            print(f"Cleared {dir_name} directory")
+        Path(dir_name).mkdir(exist_ok=True)
 
 def save_prompt_for_file(prompt: str, filename: str):
     """Save the same prompt for both main clips and their segments"""
@@ -18,6 +35,13 @@ def save_prompt_for_file(prompt: str, filename: str):
     prompt_path.write_text(prompt)
 
 def main():
+    parser = argparse.ArgumentParser(description='Process video scenes and generate descriptions')
+    parser.add_argument('--reset', action='store_true', help='Clear all cache directories before processing')
+    args = parser.parse_args()
+
+    if args.reset:
+        reset_cache()
+    
     Path(PROMPTS_DIR).mkdir(exist_ok=True)
     
     # Initialize appropriate analyzer based on mode

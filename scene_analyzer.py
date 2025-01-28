@@ -13,11 +13,15 @@ import time
 import socket
 
 class SceneAnalyzer:
-    def __init__(self, api_endpoint: str, frame_skip: int = 5, prompts_dir: str = "scene_prompts"):
+    def __init__(self, api_endpoint: str, frame_skip: int = 5, prompts_dir: str = "outputs/scene_prompts"):
         self.api_endpoint = api_endpoint
         self.frame_skip = frame_skip
         self.prompts_dir = prompts_dir
-        Path(prompts_dir).mkdir(exist_ok=True)
+        self.frames_dir = "outputs/frames"
+        self.frame_prompts_dir = "outputs/frame_prompts"
+        Path(prompts_dir).mkdir(exist_ok=True, parents=True)
+        Path(self.frames_dir).mkdir(exist_ok=True, parents=True)
+        Path(self.frame_prompts_dir).mkdir(exist_ok=True, parents=True)
 
     def get_prompt_path(self, video_path: str) -> Path:
         """Get path for prompt cache based on video filename"""
@@ -62,8 +66,8 @@ class SceneAnalyzer:
     def get_cache_paths(self, video_path: str) -> tuple[Path, Path]:
         """Get paths for frame cache and prompt cache"""
         base_name = Path(video_path).stem + "_f24"
-        frame_path = Path("frames") / f"{base_name}.npy"
-        prompt_path = Path("frame_prompts") / f"{base_name}.txt"
+        frame_path = Path(self.frames_dir) / f"{base_name}.npy"
+        prompt_path = Path(self.frame_prompts_dir) / f"{base_name}.txt"
         return frame_path, prompt_path
 
     def get_frames(self, video_path: str) -> List[numpy.ndarray]:
@@ -71,13 +75,10 @@ class SceneAnalyzer:
         base_name = Path(video_path).stem
         frames = []
         
-        # Create frames directory if it doesn't exist
-        Path("frames").mkdir(exist_ok=True)
-        
         # Check if we have all cached frame images
         frame_count = 0
         while True:
-            frame_path = Path("frames") / f"{base_name}_f{frame_count:03d}.png"
+            frame_path = Path(self.frames_dir) / f"{base_name}_f{frame_count:03d}.png"
             if not frame_path.exists():
                 break
             frame = cv2.imread(str(frame_path))
@@ -104,7 +105,7 @@ class SceneAnalyzer:
             if frame_count % effective_skip == 0 or frame_count == total_frames - 1:
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 # Save frame as PNG
-                frame_path = Path("frames") / f"{base_name}_f{frame_index:03d}.png"
+                frame_path = Path(self.frames_dir) / f"{base_name}_f{frame_index:03d}.png"
                 cv2.imwrite(str(frame_path), frame)
                 frame_index += 1
             frame_count += 1
@@ -238,8 +239,8 @@ class JanusAnalyzer(SceneAnalyzer):
         print(f"\nProcessing {total_frames} frames...")
         
         for i, frame in enumerate(frames):
-            frame_path = Path("frames") / f"{base_name}_f{i:03d}.png"
-            prompt_path = Path("frame_prompts") / f"{base_name}_f{i:03d}.txt"
+            frame_path = Path(self.frames_dir) / f"{base_name}_f{i:03d}.png"
+            prompt_path = Path(self.frame_prompts_dir) / f"{base_name}_f{i:03d}.txt"
             
             # Check if we already have a cached prompt
             if prompt_path.exists():
@@ -255,7 +256,7 @@ class JanusAnalyzer(SceneAnalyzer):
             # Create request for server
             request = {
                 'images': [str(frame_path)],
-                'output_dir': str(Path("frame_prompts"))
+                'output_dir': str(Path(self.frame_prompts_dir))
             }
             
             # Connect to server and send request

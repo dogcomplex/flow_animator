@@ -6,7 +6,7 @@ import math
 
 # Configuration variables
 INPUT_VIDEO = "input.mp4"
-OUTPUT_DIR = "output/"
+OUTPUT_DIR = "outputs/scenes/"
 FRAMES_PER_SEGMENT = 70  # roughly 2 seconds at ~30fps
 SCENE_FILENAME_TEMPLATE = "input-Scene-{scene_num:03d}.mp4"
 SEGMENT_FILENAME_TEMPLATE = "input-Scene-{scene_num:03d}-{segment:03d}.mp4"
