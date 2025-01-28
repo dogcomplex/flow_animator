@@ -10,6 +10,8 @@ from tqdm import tqdm
 OUTPUT_BASE = "outputs"
 OUTPUT_DIR = f"{OUTPUT_BASE}/scenes"
 PROMPTS_DIR = f"{OUTPUT_BASE}/scene_prompts"
+FRAMES_DIR = f"{OUTPUT_BASE}/frames"
+FRAME_PROMPTS_DIR = f"{OUTPUT_BASE}/frame_prompts"
 API_ENDPOINT = "http://192.168.56.1:12345"
 FRAME_SKIP = 24  # Analyze every 24th frame
 JANUS_PATH = "./Janus/janus_pro.py"
@@ -45,7 +47,7 @@ def main():
     Path(PROMPTS_DIR).mkdir(exist_ok=True)
     
     # Initialize appropriate analyzer based on mode
-    analyzer = JanusAnalyzer(JANUS_PATH, FRAME_SKIP, PROMPTS_DIR) if JANUS_MODE else \
+    analyzer = JanusAnalyzer(frame_skip=FRAME_SKIP, prompts_dir=PROMPTS_DIR) if JANUS_MODE else \
               SceneAnalyzer(API_ENDPOINT, FRAME_SKIP, PROMPTS_DIR)
               
     scene_descriptions: Dict[int, str] = {}

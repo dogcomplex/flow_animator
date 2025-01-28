@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import socket
+import sys
 
 class SceneAnalyzer:
     def __init__(self, api_endpoint: str, frame_skip: int = 5, prompts_dir: str = "outputs/scene_prompts"):
@@ -162,21 +163,21 @@ class SceneAnalyzer:
         return base64.b64encode(encoded.tobytes()).decode('utf-8')
 
 class JanusAnalyzer(SceneAnalyzer):
-    def __init__(self, janus_path: str, frame_skip: int = 5, prompts_dir: str = "scene_prompts"):
+    def __init__(self, frame_skip: int = 5, prompts_dir: str = "outputs/scene_prompts"):
         super().__init__("", frame_skip, prompts_dir)
-        self.janus_path = janus_path
-        Path("frames").mkdir(exist_ok=True)
-        Path("frame_prompts").mkdir(exist_ok=True)
+        self.janus_path = "janus_pro.py"
+        Path("outputs/frames").mkdir(exist_ok=True)
+        Path("outputs/frame_prompts").mkdir(exist_ok=True)
         self.server_process = None
         self.start_server()
         import atexit
         atexit.register(self.cleanup)
 
     def start_server(self):
-        """Start the Janus server if it's not already running"""
-        # Check if server is already running
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        print("Starting Janus server...")
         try:
+            # Try to connect first to see if server is already running
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(('localhost', 65432))
             sock.close()
             print("Janus server already running")
@@ -184,40 +185,36 @@ class JanusAnalyzer(SceneAnalyzer):
         except ConnectionRefusedError:
             pass
 
-        print("Starting Janus server...")
+        # Start the server process
+        server_cmd = [sys.executable, "janus_pro.py", "--persist"]
         self.server_process = subprocess.Popen(
-            ["python", self.janus_path, "--persist"],
+            server_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            text=True
         )
-
-        # Wait for server to start
-        max_attempts = 30
-        for attempt in range(max_attempts):
+        
+        # Wait for server to start (look for "Server listening" message)
+        max_retries = 30
+        retry_count = 0
+        while retry_count < max_retries:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.connect(('localhost', 65432))
                 sock.close()
                 print("Janus server started successfully")
-                
-                # Start output monitoring thread
-                def monitor_output():
-                    while self.server_process:
-                        output = self.server_process.stdout.readline()
-                        if output:
-                            print("Janus Server:", output.strip())
-                        if not output and self.server_process.poll() is not None:
-                            break
-                
-                threading.Thread(target=monitor_output, daemon=True).start()
                 return
             except ConnectionRefusedError:
                 time.sleep(1)
-                if attempt == max_attempts - 1:
-                    raise Exception("Failed to start Janus server")
+                retry_count += 1
+        
+        # If we get here, server failed to start
+        if self.server_process:
+            stdout, stderr = self.server_process.communicate()
+            print("Server stdout:", stdout)
+            print("Server stderr:", stderr)
+            self.server_process.terminate()
+        raise Exception("Failed to start Janus server after 30 seconds")
 
     def cleanup(self):
         """Cleanup only server resources, keeping frame caches"""
