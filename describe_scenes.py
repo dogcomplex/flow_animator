@@ -55,52 +55,21 @@ def main():
             for video_path in scene_groups[scene_num]:
                 save_prompt_for_file(cached_prompt, video_path.stem)
 
-    # Process uncached scenes in batches
+    # Process uncached scenes
     if uncached_scenes:
         print(f"\nProcessing {len(uncached_scenes)} uncached scenes...")
-        all_frames = []
-        frame_map = []  # Keep track of which frames belong to which scene
         
-        # Extract frames from all uncached scenes
+        # Process each scene individually
         for scene_num in uncached_scenes:
             video_path = scene_groups[scene_num][0]
             frames = analyzer.get_frames(str(video_path))
             if frames:
-                all_frames.extend(frames)
-                frame_map.extend([scene_num] * len(frames))
-
-        if all_frames:
-            # Process all frames in one batch
-            descriptions = analyzer.analyze_frames_batch(all_frames)
-            
-            # Map descriptions back to scenes
-            current_scene = None
-            current_desc = []
-            
-            for frame_num, (scene_num, desc) in enumerate(zip(frame_map, descriptions)):
-                if current_scene != scene_num:
-                    if current_scene is not None:
-                        # Save the aggregated description for the previous scene
-                        final_desc = analyzer.aggregate_descriptions(current_desc)
-                        scene_descriptions[current_scene] = final_desc
-                        analyzer.save_prompt_cache(current_scene, final_desc)
-                        for video_path in scene_groups[current_scene]:
-                            save_prompt_for_file(final_desc, video_path.stem)
-                        print(f"\nScene {current_scene:03d}: {final_desc}")
-                    
-                    current_scene = scene_num
-                    current_desc = [desc]
-                else:
-                    current_desc.append(desc)
-            
-            # Handle the last scene
-            if current_scene is not None:
-                final_desc = analyzer.aggregate_descriptions(current_desc)
-                scene_descriptions[current_scene] = final_desc
-                analyzer.save_prompt_cache(current_scene, final_desc)
-                for video_path in scene_groups[current_scene]:
-                    save_prompt_for_file(final_desc, video_path.stem)
-                print(f"\nScene {current_scene:03d}: {final_desc}")
+                description = analyzer.analyze_frames(frames)
+                scene_descriptions[scene_num] = description
+                analyzer.save_prompt_cache(scene_num, description)
+                for video_path in scene_groups[scene_num]:
+                    save_prompt_for_file(description, video_path.stem)
+                print(f"\nScene {scene_num:03d}: {description}")
 
 if __name__ == "__main__":
     main()
