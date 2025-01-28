@@ -230,80 +230,133 @@ class JanusAnalyzer(SceneAnalyzer):
     def analyze_frames(self, frames: List[numpy.ndarray], video_path: str) -> str:
         """Analyze frames using Janus-Pro model with persistent caching"""
         base_name = Path(video_path).stem
-        descriptions = []
+        frame_descriptions = []
         total_frames = len(frames)
         
         print(f"\nProcessing {total_frames} frames...")
         
+        # First pass - get individual frame descriptions
         for i, frame in enumerate(frames):
             frame_path = Path(self.frames_dir) / f"{base_name}_f{i:03d}.png"
             prompt_path = Path(self.frame_prompts_dir) / f"{base_name}_f{i:03d}.txt"
             
-            # Check if we already have a cached prompt
-            if prompt_path.exists():
-                with open(prompt_path, 'r') as f:
-                    description = f.read().strip()
-                    if description:  # Only append non-empty descriptions
-                        descriptions.append(description)
-                print(f"\nFrame {i+1}/{total_frames}: Using cached description")
-                continue
-            
             # Save frame as image
             cv2.imwrite(str(frame_path), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             
-            max_retries = 3
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(30)  # Add timeout
-                    sock.connect(('localhost', 65432))
-                    
-                    request = {
-                        'images': [str(frame_path)],
-                        'output_dir': str(Path(self.frame_prompts_dir))
-                    }
-                    
-                    message = json.dumps(request).encode('utf-8')
-                    message_len = len(message)
-                    sock.sendall(message_len.to_bytes(8, byteorder='big'))
-                    sock.sendall(message)
-                    
-                    response_len_bytes = sock.recv(8)
-                    if not response_len_bytes:
-                        raise Exception("Connection closed by server")
-                        
-                    response_len = int.from_bytes(response_len_bytes, byteorder='big')
-                    response = b''
-                    while len(response) < response_len:
-                        chunk = sock.recv(min(8192, response_len - len(response)))
-                        if not chunk:
-                            raise Exception("Connection closed while receiving data")
-                        response += chunk
-                    
-                    results = json.loads(response.decode('utf-8'))
-                    if results and isinstance(results[0], dict) and results[0].get('success'):
-                        description = results[0]['result']
-                        if description.strip():  # Only append non-empty descriptions
-                            descriptions.append(description)
-                        prompt_path.write_text(description)
-                        print(f"\nFrame {i+1}/{total_frames}: {description}")
-                        break  # Success - exit retry loop
-                    else:
-                        error = results[0].get('error') if results else "Unknown error"
-                        raise Exception(error)
-                        
-                except Exception as e:
-                    retry_count += 1
-                    print(f"\nError processing frame {i+1}/{total_frames} (attempt {retry_count}/{max_retries}): {e}")
-                    if retry_count == max_retries:
-                        print(f"Failed to process frame after {max_retries} attempts")
-                finally:
-                    sock.close()
+            # Get or create frame description
+            if prompt_path.exists():
+                with open(prompt_path, 'r') as f:
+                    description = f.read().strip()
+                    if description:
+                        frame_descriptions.append((i, description))
+                print(f"\nFrame {i+1}/{total_frames}: Using cached description")
+                continue
+            
+            # Process new frame description using existing socket logic
+            try:
+                result = self._process_frame_with_socket(frame_path, i, total_frames)
+                if result:
+                    frame_descriptions.append((i, result))
+                    prompt_path.write_text(result)
+            except Exception as e:
+                print(f"\nError processing frame {i+1}/{total_frames}: {e}")
+
+        # If we have descriptions, create scene-level analysis
+        if frame_descriptions:
+            # Create system prompt for scene analysis
+            system_prompt = (
+                "Please compare the start and end frames of this scene, along with the following "
+                "summaries of frames, and give a description of the movement and style of the video "
+                "scene action. Answer as a descriptive action prompt.\n\n"
+            )
+            
+            # Add frame descriptions
+            for idx, desc in frame_descriptions:
+                system_prompt += f"Frame {idx+1}: {desc}\n"
+            
+            # Add final note about attached frames
+            system_prompt += f"\nAttached: Frame 1 and Frame {total_frames}"
+            
+            # Process scene-level analysis
+            try:
+                first_frame_path = Path(self.frames_dir) / f"{base_name}_f000.png"
+                last_frame_path = Path(self.frames_dir) / f"{base_name}_f{total_frames-1:03d}.png"
                 
-        # Only raise exception if we got no descriptions at all
-        if not descriptions:
-            raise Exception("Janus-Pro analysis failed to produce any output")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(30)
+                sock.connect(('localhost', 65432))
+                
+                request = {
+                    'images': [str(first_frame_path), str(last_frame_path)],
+                    'prompt': system_prompt,
+                    'output_dir': str(Path(self.frame_prompts_dir))
+                }
+                
+                message = json.dumps(request).encode('utf-8')
+                message_len = len(message)
+                sock.sendall(message_len.to_bytes(8, byteorder='big'))
+                sock.sendall(message)
+                
+                response_len = int.from_bytes(sock.recv(8), byteorder='big')
+                response = b''
+                while len(response) < response_len:
+                    chunk = sock.recv(min(8192, response_len - len(response)))
+                    if not chunk:
+                        raise Exception("Connection closed while receiving data")
+                    response += chunk
+                
+                results = json.loads(response.decode('utf-8'))
+                if results and isinstance(results[0], dict) and results[0].get('success'):
+                    return results[0]['result']
+                
+            except Exception as e:
+                print(f"Error processing scene analysis: {e}")
+                # Fall back to first frame description if scene analysis fails
+                return frame_descriptions[0][1]
+            finally:
+                sock.close()
         
-        # Return the first good description
-        return descriptions[0] 
+        raise Exception("Failed to produce any valid frame descriptions")
+
+    def _process_frame_with_socket(self, frame_path: Path, frame_num: int, total_frames: int) -> Optional[str]:
+        """Helper method to process individual frames with socket connection"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(30)
+                sock.connect(('localhost', 65432))
+                
+                request = {
+                    'images': [str(frame_path)],
+                    'output_dir': str(Path(self.frame_prompts_dir))
+                }
+                
+                message = json.dumps(request).encode('utf-8')
+                message_len = len(message)
+                sock.sendall(message_len.to_bytes(8, byteorder='big'))
+                sock.sendall(message)
+                
+                response_len = int.from_bytes(sock.recv(8), byteorder='big')
+                response = b''
+                while len(response) < response_len:
+                    chunk = sock.recv(min(8192, response_len - len(response)))
+                    if not chunk:
+                        raise Exception("Connection closed while receiving data")
+                    response += chunk
+                
+                results = json.loads(response.decode('utf-8'))
+                if results and isinstance(results[0], dict) and results[0].get('success'):
+                    return results[0]['result']
+                
+            except Exception as e:
+                retry_count += 1
+                print(f"\nError processing frame {frame_num+1}/{total_frames} (attempt {retry_count}/{max_retries}): {e}")
+                if retry_count == max_retries:
+                    return None
+            finally:
+                sock.close()
+        
+        return None 

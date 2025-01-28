@@ -7,18 +7,20 @@ import math
 # Configuration variables
 INPUT_VIDEO = "input.mp4"
 OUTPUT_DIR = "outputs/scenes/"
+OUTPUT_CSV = "outputs/input-Scenes.csv"  # New CSV location
 FRAMES_PER_SEGMENT = 70  # roughly 2 seconds at ~30fps
 SCENE_FILENAME_TEMPLATE = "input-Scene-{scene_num:03d}.mp4"
 SEGMENT_FILENAME_TEMPLATE = "input-Scene-{scene_num:03d}-{segment:03d}.mp4"
 
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)  # Ensure CSV directory exists
 
 # Step 1: Detect scenes and save the scene list to a CSV
 print("Detecting scenes...")
 subprocess.run([
     "scenedetect", "-i", INPUT_VIDEO, "detect-content",
-    "list-scenes", "-o", OUTPUT_DIR
+    "list-scenes", "-o", os.path.dirname(OUTPUT_CSV)  # Change output directory for CSV
 ])
 
 # Step 2: Generate split video files for each detected scene
@@ -30,12 +32,11 @@ subprocess.run([
 ])
 
 # Step 3: Load the scene CSV and process further splits for scenes longer than FRAMES_PER_SEGMENT
-scenes_csv = os.path.join(OUTPUT_DIR, f"{os.path.splitext(os.path.basename(INPUT_VIDEO))[0]}-Scenes.csv")
-print(f"\nLooking for CSV file: {scenes_csv}")
+print(f"\nLooking for CSV file: {OUTPUT_CSV}")
 
-if os.path.exists(scenes_csv):
+if os.path.exists(OUTPUT_CSV):
     print(f"Found CSV file. Processing scenes...")
-    with open(scenes_csv, 'r') as f:
+    with open(OUTPUT_CSV, 'r') as f:
         csv_content = f.readlines()
         
     print(f"CSV lines read: {len(csv_content)}")
