@@ -6,7 +6,10 @@ Takes an input video and automatically splits it into scenes, then describes eac
 
 Meant to be paired with [kijai's CogVideoXWrapper](https://github.com/kijai/ComfyUI-CogVideoXWrapper/tree/main) implementing [Go-With-The-Flow](https://eyeline-research.github.io/Go-with-the-Flow/)
 
-Crude workflow: [V2V_CogXFlow](V2V_CogXFlow.json)
+Crude workflow JSON: [V2V_CogXFlow](V2V_CogXFlow.json)
+
+Embedded workflow image:
+![V2V_CogXFlow](brodyquest_workflow.png)
 
 I recommend Pinokio "Comfy Environment Manager" for ComfyUI installation, or StabilityMatrix if you're new to ComfyUI.
 
