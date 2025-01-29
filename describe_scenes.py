@@ -5,6 +5,8 @@ from pathlib import Path
 from scene_analyzer import SceneAnalyzer, JanusAnalyzer
 from typing import Dict, List
 from tqdm import tqdm
+import socket
+import json
 
 # Configuration
 OUTPUT_BASE = "outputs"
@@ -35,6 +37,47 @@ def save_prompt_for_file(prompt: str, filename: str):
     """Save the same prompt for both main clips and their segments"""
     prompt_path = Path(PROMPTS_DIR) / f"{filename}.txt"
     prompt_path.write_text(prompt)
+
+def create_summary(prompt: str) -> str:
+    """Generate a condensed summary of a scene prompt"""
+    system_prompt = (
+        "Please condense the following into a single-paragraph prompt describing the "
+        "change/motion/style of the scene. Do not use 'frame' descriptions. Just a "
+        "poetic simple prompt describing the overall actions of what happens in the scene\n\n"
+        f"Summarize this: {prompt}"
+    )
+    
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(30)
+        sock.connect(('localhost', 65432))
+        
+        request = {
+            'images': [],  # No images needed for this summary
+            'prompt': system_prompt,
+            'output_dir': 'outputs/scene_prompt_summaries'
+        }
+        
+        message = json.dumps(request).encode('utf-8')
+        message_len = len(message)
+        sock.sendall(message_len.to_bytes(8, byteorder='big'))
+        sock.sendall(message)
+        
+        response_len = int.from_bytes(sock.recv(8), byteorder='big')
+        response = b''
+        while len(response) < response_len:
+            chunk = sock.recv(min(8192, response_len - len(response)))
+            if not chunk:
+                raise Exception("Connection closed while receiving data")
+            response += chunk
+        
+        results = json.loads(response.decode('utf-8'))
+        if results and isinstance(results[0], dict) and results[0].get('success'):
+            return results[0]['result']
+    except Exception as e:
+        print(f"Error generating summary: {e}")
+        return prompt
+    return prompt
 
 def main():
     parser = argparse.ArgumentParser(description='Process video scenes and generate descriptions')
@@ -95,6 +138,12 @@ def main():
                 for video_path in scene_groups[scene_num]:
                     save_prompt_for_file(description, video_path.stem)
                 print(f"\nScene {scene_num:03d}: {description}")
+
+    # Create summaries for all scene descriptions
+    for scene_num, prompt in scene_descriptions.items():
+        summary = create_summary(prompt)
+        print(f"\nScene {scene_num:03d}: Summary of prompt")
+        print(summary)
 
 if __name__ == "__main__":
     main()
