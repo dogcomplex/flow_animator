@@ -2,7 +2,7 @@
 
 (Aka Brodyquest Animator)
 
-[AI-DRIAN BRODYQUEST test video](https://www.youtube.com/watch?v=Gh-ImbICkeI&ab_channel=Hobbes13)
+[AI-DRIEN BRODYQUEST test video](https://www.youtube.com/watch?v=Gh-ImbICkeI&ab_channel=Hobbes13)
 
 Takes an input video and automatically splits it into scenes, then describes each scene using vision LLM Janus-Pro (20GB)
 
