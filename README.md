@@ -2,6 +2,8 @@
 
 (Aka Brodyquest Animator)
 
+[AI-DRIAN BRODYQUEST test video](https://www.youtube.com/watch?v=Gh-ImbICkeI&ab_channel=Hobbes13)
+
 Takes an input video and automatically splits it into scenes, then describes each scene using vision LLM Janus-Pro (20GB)
 
 Meant to be paired with [kijai's CogVideoXWrapper](https://github.com/kijai/ComfyUI-CogVideoXWrapper/tree/main) implementing [Go-With-The-Flow](https://eyeline-research.github.io/Go-with-the-Flow/)
