@@ -32,3 +32,13 @@ python split_scenes.py
 python describe_scenes.py
 ```
 
+# EXAMPLE
+  
+BLIND ONE-SHOT auto-parsing of *Brodyquest*.  This will work on ANY input video:
+- https://github.com/dogcomplex/flow_animator
+- Input video passed through ffmpeg scene detection to make clips 2s max
+- then commentary prompts generated via Deepseek's Janus-Pro per-scene, analyzing every 25-max frames
+- then scenes + prompts autoloaded through (ComfyUI Workflow)[https://github.com/dogcomplex/flow_animator] using [kijai's CogVideoXWrapper](https://github.com/kijai/ComfyUI-CogVideoXWrapper/tree/main).  
+- output renders stitched back together by hand using Shotcut (not particularly recommended tho...), and comparison video arranged with OpenShot
+- upscaled in Topaz to 1024p 24fps
+
